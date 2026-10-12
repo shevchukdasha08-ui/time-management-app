@@ -1,0 +1,52 @@
+name: Daily PostgreSQL Backup and Encryption
+
+on:
+  schedule:
+   
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  database-backup:
+    runs-on: ubuntu-latest
+
+    steps:
+     
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      
+      - name: Install PostgreSQL Client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      
+      - name: Create Database Dump
+        env:
+          PGHOST: ${{ secrets.DB_HOST }}
+          PGUSER: ${{ secrets.DB_USER }}
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+          PGDATABASE: ${{ secrets.DB_NAME }}
+        run: |
+          pg_dump -h $PGHOST -U $PGUSER -d $PGDATABASE -F c -b -v -f time_management_backup.dump
+
+      
+      - name: Encrypt Backup File (AES-256)
+        run: |
+          openssl enc -aes-256-cbc -salt \
+            -in time_management_backup.dump \
+            -out time_management_backup.enc \
+            -k ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+
+   
+      - name: Upload Encrypted Backup to AWS S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl private
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'eu-west-1'
+          SOURCE_DIR: '.'
