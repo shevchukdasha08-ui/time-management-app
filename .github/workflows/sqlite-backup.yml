@@ -1,0 +1,62 @@
+name: SQLite Database Backup to AWS S3
+
+on:
+  schedule:
+    # Запуск каждый день в 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Возможность ручного запуска из вкладки Actions
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 1. Установка пакетов для SQLite, шифрования GPG и AWS CLI
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3 gnupg awscli
+
+      # 2. Создание безопасного горячего бэкапа SQLite
+      - name: Create SQLite Safe Backup
+        run: |
+          mkdir -p backups
+          TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+          BACKUP_FILENAME="app_backup_${TIMESTAMP}.db"
+          
+          # Безопасный вызов SQLite Backup API без блокировки базы
+          sqlite3 app.db ".backup 'backups/${BACKUP_FILENAME}'"
+          
+          echo "BACKUP_PATH=backups/${BACKUP_FILENAME}" >> $GITHUB_ENV
+          echo "BACKUP_FILENAME=${BACKUP_FILENAME}" >> $GITHUB_ENV
+
+      # 3. Шифрование файла базы данных по стандарту AES-256
+      - name: Encrypt Backup File (AES-256)
+        env:
+          ENCRYPTION_PASSPHRASE: ${{ secrets.DB_BACKUP_PASSPHRASE }}
+        run: |
+          gpg --batch --yes --symmetric \
+            --cipher-algo AES256 \
+            --passphrase "$ENCRYPTION_PASSPHRASE" \
+            --output "${{ env.BACKUP_PATH }}.enc" \
+            "${{ env.BACKUP_PATH }}"
+
+      # 4. Отправка зашифрованного файла в бакет Amazon S3
+      - name: Upload to AWS S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: 'eu-west-1'
+          S3_BUCKET: ${{ secrets.AWS_S3_BUCKET_NAME }}
+        run: |
+          aws s3 cp "${{ env.BACKUP_PATH }}.enc" \
+            "s3://${S3_BUCKET}/sqlite-backups/${{ env.BACKUP_FILENAME }}.enc" \
+            --region $AWS_REGION
+
+      # 5. Сообщение об успешном завершении
+      - name: Log Success
+        run: |
+          echo "Бэкап SQLite успешно создан, зашифрован и загружен: ${{ env.BACKUP_FILENAME }}.enc"
